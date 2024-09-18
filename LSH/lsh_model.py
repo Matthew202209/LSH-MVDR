@@ -63,9 +63,9 @@ class LSHEncoder(nn.Module):
         token_sparse_repr = token_sparse_repr[token_sparse_mask]
 
         # router_softmax_repr = torch.softmax(logits, dim=-1)
-        ret["token_dense_repr"] = token_dense_repr
-        ret["token_sparse_repr"] = token_sparse_repr
-        ret["cls_repr"] = cls_repr.clone()
-        ret["num_token"] =  list(torch.sum(attention_mask, dim=1).detach().cpu().numpy())
+        ret["token_dense_repr"] = token_dense_repr.to(torch.float32)
+        ret["token_sparse_repr"] = token_sparse_repr.to(torch.float32)
+        ret["cls_repr"] = cls_repr.clone().to(torch.float32)
+        ret["num_token"] =  torch.sum(attention_mask, dim=1)
 
         return ret
