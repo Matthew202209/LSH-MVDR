@@ -14,7 +14,8 @@ from transformers import BertTokenizer, DataCollatorWithPadding
 
 from LSH.citadel_utils import process_check_point
 from LSH.lsh_model import LSHEncoder
-from dataloader import BenchmarkQueriesDataset, BenchmarkDataset
+from LSH.transformer import HFTransform
+from dataloader import LSHQueryDataset
 from utils import create_this_perf
 
 
@@ -54,19 +55,14 @@ class LSHRetrieve:
         self.searcher.load_index()
 
     def _prepare_data(self):
-        tokenizer = BertTokenizer.from_pretrained(self.config.transformer_model_dir, use_fast=False)
-        self.dataset = BenchmarkQueriesDataset(self.config, tokenizer)
+        transform = HFTransform(self.config.transformer_model_dir, self.config.max_seq_len)
+        self.dataset = LSHQueryDataset(self.config, transform)
         self.encode_loader = DataLoader(
             self.dataset,
             batch_size=1,
-            collate_fn=DataCollatorWithPadding(
-                tokenizer,
-                max_length=self.config.max_seq_len,
-                padding='max_length'
-            ),
             shuffle=False,
             drop_last=False,
-            num_workers=self.config.dataloader_num_workers,
+            num_workers=1,
         )
 
 
@@ -189,8 +185,6 @@ class HypersphericalLSHIndex:
         self.sum_scores = None
         self.max_scores = None
 
-
-
     def load_index(self):
         index_dir = os.path.join(self.config.index_dir, f'{self.config.dataset}')
         self.hash_bins = torch.load("{}/{}".format(index_dir, 'hash_bins.pt'), map_location="cpu")
@@ -199,21 +193,21 @@ class HypersphericalLSHIndex:
         self.hash_v_mean = torch.load(r"{}/{}".format(index_dir, 'hash_v_mean.pt'), map_location="cpu")
         self.hash_v_std = torch.load(r"{}/{}".format(index_dir, 'hash_v_std.pt'), map_location="cpu")
 
-
-    def search(self, cls_vec, embeddings, topk=30):
+    def set_scores(self):
         self.sum_scores = torch.zeros((1, self.all_cls.shape[0],), dtype=torch.float32)
         self.max_scores = torch.zeros((self.all_cls.shape[0],), dtype=torch.float32)
+
+    def search(self, cls_vec, embeddings, topk=30):
         cls_vec = cls_vec.to(torch.float32)
         embeddings = embeddings.to(torch.float32)
         topk_indices = self.cal_hash_value(embeddings)
-        # self.cls_search(cls_vec)
+
+        self.cls_search(cls_vec)
         self.lsh_search(embeddings, topk_indices)
         top_scores, top_ids = self.sort(topk)
         self.sum_scores.fill_(0)
         return top_scores, top_ids
 
-
-        
     def cls_search(self, cls_vec):
         self.sum_scores = self.compute_similarity(cls_vec, self.all_cls)
 
@@ -243,7 +237,6 @@ class HypersphericalLSHIndex:
         new_tensor = (this_tensor -  self.hash_v_mean) / self.hash_v_std
         norms = torch.norm(new_tensor, p=2, dim=1, keepdim=True)
         return new_tensor / norms
-
 
     def compute_similarity(self, q_repr, ctx_repr):
         return torch.matmul(q_repr, ctx_repr.T)

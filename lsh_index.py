@@ -10,34 +10,35 @@ from transformers import BertTokenizer, DataCollatorWithPadding
 
 from LSH.citadel_utils import process_check_point
 from LSH.lsh_model import LSHEncoder
-from dataloader import BenchmarkDataset
+from dataloader import LSHDataset
+from LSH.transformer import HFTransform
 
-class LSHIndexCoil1:
-    def __init__(self, config):
-        self.config = config
-        self.transformer_model_dir = config.transformer_model_dir
-        self.encode_loader = None
-        self.context_encoder = None
-        self.dataset = None
-
-    def _prepare_data(self):
-        tokenizer = BertTokenizer.from_pretrained(self.transformer_model_dir, use_fast=False)
-        self.dataset = BenchmarkDataset(self.config, tokenizer)
-        self.encode_loader = DataLoader(
-            self.dataset,
-            batch_size=self.config.encode_batch_size,
-            collate_fn=DataCollatorWithPadding(
-                tokenizer,
-                max_length=self.config.max_seq_len,
-                padding='max_length'
-            ),
-            shuffle=False,
-            drop_last=False,
-            num_workers=self.config.dataloader_num_workers,
-        )
-
-    def _prepare_model(self):
-        pass
+# class LSHIndexCoil1:
+#     def __init__(self, config):
+#         self.config = config
+#         self.transformer_model_dir = config.transformer_model_dir
+#         self.encode_loader = None
+#         self.context_encoder = None
+#         self.dataset = None
+#
+#     def _prepare_data(self):
+#         tokenizer = BertTokenizer.from_pretrained(self.transformer_model_dir, use_fast=False)
+#         self.dataset = BenchmarkDataset(self.config, tokenizer)
+#         self.encode_loader = DataLoader(
+#             self.dataset,
+#             batch_size=self.config.encode_batch_size,
+#             collate_fn=DataCollatorWithPadding(
+#                 tokenizer,
+#                 max_length=self.config.max_seq_len,
+#                 padding='max_length'
+#             ),
+#             shuffle=False,
+#             drop_last=False,
+#             num_workers=self.config.dataloader_num_workers,
+#         )
+#
+#     def _prepare_model(self):
+#         pass
 
 
 class LSHIndex:
@@ -49,19 +50,14 @@ class LSHIndex:
         self.dataset = None
 
     def _prepare_data(self):
-        tokenizer = BertTokenizer.from_pretrained(self.transformer_model_dir, use_fast=False)
-        self.dataset = BenchmarkDataset(self.config, tokenizer)
+        transform = HFTransform(self.config.transformer_model_dir, self.config.max_seq_len)
+        self.dataset = LSHDataset(self.config, transform)
         self.encode_loader = DataLoader(
             self.dataset,
             batch_size=self.config.encode_batch_size,
-            collate_fn=DataCollatorWithPadding(
-                tokenizer,
-                max_length=self.config.max_seq_len,
-                padding='max_length'
-            ),
             shuffle=False,
             drop_last=False,
-            num_workers=self.config.dataloader_num_workers,
+            num_workers=1,
         )
 
     def _prepare_model(self):
@@ -84,6 +80,7 @@ class LSHIndex:
         cls_list = []
         num_token_list = []
         for batch in tqdm(self.encode_loader):
+            corpus_ids = list(batch.data["corpus_ids"][0])
             contexts_ids_dict = {}
             with torch.cuda.amp.autocast():
                 with torch.no_grad():
@@ -96,16 +93,23 @@ class LSHIndex:
 
                 contexts_repr = self.context_encoder(batch)
 
-
             contexts_repr = {k: v.detach().cpu() for k, v in contexts_repr.items()}
-            token_dense_repr_list.append(contexts_repr["token_dense_repr"])
+            for batch_id, token_dense_reprs in enumerate(contexts_repr["token_dense_repr"]):
+                corpus_id = corpus_ids[batch_id]
+                for token_dense_repr in token_dense_reprs:
+                    if float(torch.sum(token_dense_repr, dim=0))==0:
+                        continue
+                    num_token_list.append(int(corpus_id))
+                    token_dense_repr_list.append(token_dense_repr.unsqueeze(0))
+            
+            # token_dense_repr_list.append(contexts_repr["token_dense_repr"])
             # token_sparse_repr_list.append(contexts_repr["token_sparse_repr"])
             cls_list.append(contexts_repr["cls_repr"])
-            num_token_list+=list(contexts_repr["num_token"].detach().cpu().numpy())
+            # num_token_list+=list(contexts_repr["num_token"].detach().cpu().numpy())
 
 
 
-        all_dense_repr = torch.cat(token_dense_repr_list)
+        all_dense_repr = torch.cat(token_dense_repr_list, dim=0)
         # all_sparse_repr = torch.cat(token_sparse_repr_list)
         all_cls = torch.cat(cls_list)
 
@@ -130,22 +134,16 @@ class LSHIndex:
         hash_value_matrix = normalized_dense_repr @ hash_matrix
         topk_indices = hash_value_matrix.topk( self.config.num_hash, dim=1).indices
         hash_bins = {}
-        p = 0
-        offset = num_token_list[p]
+       
         for i , row in enumerate(tqdm(topk_indices)):
-
-            if i > offset -1:
-                p += 1
-                offset += num_token_list[p]
-
 
             hash_value = tuple(row.tolist())
             if hash_value in list(hash_bins.keys()):
-                hash_bins[hash_value]["dense_repr"].append((all_dense_repr[i],p))
+                hash_bins[hash_value]["dense_repr"].append((all_dense_repr[i], num_token_list[i]))
                 # hash_bins[hash_value]["sparse_repr"].append((all_sparse_repr[i],p))
             else:
-                hash_bins[hash_value] = {}
-                hash_bins[hash_value]["dense_repr"] = [(all_dense_repr[i],p)]
+                hash_bins[hash_value]= {}
+                hash_bins[hash_value]["dense_repr"] = [(all_dense_repr[i], num_token_list[i])]
                 # hash_bins[hash_value]["sparse_repr"] = [(all_sparse_repr[i],p)]
 
         for hash_value, values in hash_bins.items():
