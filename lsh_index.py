@@ -12,6 +12,34 @@ from LSH.citadel_utils import process_check_point
 from LSH.lsh_model import LSHEncoder
 from dataloader import BenchmarkDataset
 
+class LSHIndexCoil1:
+    def __init__(self, config):
+        self.config = config
+        self.transformer_model_dir = config.transformer_model_dir
+        self.encode_loader = None
+        self.context_encoder = None
+        self.dataset = None
+
+    def _prepare_data(self):
+        tokenizer = BertTokenizer.from_pretrained(self.transformer_model_dir, use_fast=False)
+        self.dataset = BenchmarkDataset(self.config, tokenizer)
+        self.encode_loader = DataLoader(
+            self.dataset,
+            batch_size=self.config.encode_batch_size,
+            collate_fn=DataCollatorWithPadding(
+                tokenizer,
+                max_length=self.config.max_seq_len,
+                padding='max_length'
+            ),
+            shuffle=False,
+            drop_last=False,
+            num_workers=self.config.dataloader_num_workers,
+        )
+
+    def _prepare_model(self):
+        pass
+
+
 class LSHIndex:
     def __init__(self,config):
         self.config = config

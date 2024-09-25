@@ -4,6 +4,7 @@ import perf_event
 from copy import deepcopy
 
 import faiss
+import ir_measures
 import pandas as pd
 import torch
 import torch_scatter
@@ -13,7 +14,7 @@ from transformers import BertTokenizer, DataCollatorWithPadding
 
 from LSH.citadel_utils import process_check_point
 from LSH.lsh_model import LSHEncoder
-from dataloader import BenchmarkQueriesDataset
+from dataloader import BenchmarkQueriesDataset, BenchmarkDataset
 from utils import create_this_perf
 
 
@@ -105,7 +106,7 @@ class LSHRetrieve:
             cls_repr = queries_repr["cls_repr"]
             perf_encode.stopCounters()
             perf_retrival.startCounters()
-            batch_top_scores, batch_top_ids = self.searcher.search(cls_repr, token_dense_repr)
+            batch_top_scores, batch_top_ids = self.searcher.search(cls_repr, token_dense_repr,)
             perf_retrival.stopCounters()
             this_perf = create_this_perf(perf_encode, perf_retrival)
             all_perf.append(this_perf)
@@ -154,9 +155,26 @@ class LSHRetrieve:
                     fout.write(f'{q_id} 0 {indices[j]} {j} {scores[j]} run\n')
         return path
 
+    def evaluate(self, path):
+        qrels = pd.read_csv(r"{}/{}.csv".format(self.config.label_json_dir, self.config.dataset))
+        qrels["query_id"] = qrels["query_id"].astype(str)
+        qrels["doc_id"] = qrels["doc_id"].astype(str)
+
+        encode_dataset = BenchmarkDataset(self.config, None)
+        new_2_old = list(encode_dataset.corpus.keys())
+        rank_results_pd = pd.DataFrame(list(ir_measures.read_trec_run(path)))
+        for i, r in rank_results_pd.iterrows():
+            rank_results_pd.at[i, "doc_id"] = new_2_old[int(r["doc_id"])]
+        eval_results = ir_measures.calc_aggregate(self.config.measure, qrels, rank_results_pd)
+        return eval_results
+
     def run(self):
         self._prepare_data()
         eval_results_path = self._retrieve()
+        eval_results= self.evaluate(eval_results_path)
+        print(eval_results)
+
+
 
 
 
@@ -182,13 +200,13 @@ class HypersphericalLSHIndex:
         self.hash_v_std = torch.load(r"{}/{}".format(index_dir, 'hash_v_std.pt'), map_location="cpu")
 
 
-    def search(self, cls_vec, embeddings, topk=100):
-        self.sum_scores = torch.zeros((self.all_cls.shape[0],), dtype=torch.float32)
+    def search(self, cls_vec, embeddings, topk=30):
+        self.sum_scores = torch.zeros((1, self.all_cls.shape[0],), dtype=torch.float32)
         self.max_scores = torch.zeros((self.all_cls.shape[0],), dtype=torch.float32)
         cls_vec = cls_vec.to(torch.float32)
         embeddings = embeddings.to(torch.float32)
         topk_indices = self.cal_hash_value(embeddings)
-        self.cls_search(cls_vec)
+        # self.cls_search(cls_vec)
         self.lsh_search(embeddings, topk_indices)
         top_scores, top_ids = self.sort(topk)
         self.sum_scores.fill_(0)
@@ -205,10 +223,10 @@ class HypersphericalLSHIndex:
             hash_key = tuple(hash_key.tolist())
             token_matrix = self.hash_bins[hash_key]["dense_repr"][0]
             token_pid = self.hash_bins[hash_key]["dense_repr"][1]
-            token_score = self.compute_similarity(embeddings[i], token_matrix)
+            token_score = self.compute_similarity(embeddings[i], token_matrix).relu_()
             token_pid_tensor = torch.Tensor(token_pid).to(torch.int64)
             torch_scatter.scatter_max(src=token_score, index=token_pid_tensor, out=self.max_scores, dim=-1)
-            self.sum_scores += self.max_scores
+            self.sum_scores[0] += self.max_scores
             self.max_scores.fill_(0)
 
 

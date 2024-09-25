@@ -28,7 +28,7 @@ if __name__ == '__main__':
     parser.add_argument("--encode_device", type=str, default=r"cuda:0")
 
     parser.add_argument("--add_context_id", type=bool, default=False)
-    parser.add_argument("--num_hash", type=int, default=6)
+    parser.add_argument("--num_hash", type=int, default=1)
     parser.add_argument("--weight_threshold", type=float, default=0.5)
     parser.add_argument("--prune_weight", type=float, default=0.8)
 
@@ -48,9 +48,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     #
-    # lsh_indexer = LSHIndex(args)
-    # lsh_indexer.run()
+    lsh_indexer = LSHIndex(args)
+    lsh_indexer.run()
 
-    h = LSHRetrieve(args)
-    h.setup()
-    h.run()
+    # h = LSHRetrieve(args)
+    # h.setup()
+    # h.run()

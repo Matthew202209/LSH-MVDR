@@ -15,8 +15,8 @@ class BenchmarkDataset(Dataset):
         self._load_corpus()
 
     def _load_corpus(self):
-        num_lines = sum(1 for i in open(r"{}".format(self.corpus_file), 'rb'))
-        with open(self.corpus_file, encoding='utf-8') as fIn:
+        num_lines = sum(1 for i in open(r"{}/{}.jsonl".format(self.corpus_file, self.config.dataset), 'rb'))
+        with open(r"{}/{}.jsonl".format(self.corpus_file, self.config.dataset), encoding='utf-8') as fIn:
             for line in tqdm(fIn, total=num_lines):
                 line = ujson.loads(line)
                 if '_id' in line.keys():
