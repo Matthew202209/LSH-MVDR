@@ -15,7 +15,7 @@ from transformers import BertTokenizer, DataCollatorWithPadding
 from LSH.citadel_utils import process_check_point
 from LSH.lsh_model import LSHEncoder
 from LSH.transformer import HFTransform
-from dataloader import LSHQueryDataset
+from dataloader import LSHQueryDataset, LSHDataset
 from utils import create_this_perf
 
 
@@ -36,6 +36,7 @@ class LSHRetrieve:
         self._sep_up_searcher()
 
 
+
     def _load_checkpoint(self):
         checkpoint_dict = torch.load(self.config.check_point_path)["state_dict"]
         checkpoint_dict = process_check_point(checkpoint_dict)
@@ -53,6 +54,7 @@ class LSHRetrieve:
     def _sep_up_searcher(self):
         self.searcher = HypersphericalLSHIndex(self.config)
         self.searcher.load_index()
+        self.searcher.set_scores()
 
     def _prepare_data(self):
         transform = HFTransform(self.config.transformer_model_dir, self.config.max_seq_len)
@@ -98,7 +100,9 @@ class LSHRetrieve:
             perf_encode.startCounters()
             queries_repr = self.context_encoder(batch)
             queries_repr = {k: v.detach().cpu() for k, v in queries_repr.items()}
-            token_dense_repr = queries_repr["token_dense_repr"]
+            token_dense_repr = queries_repr["token_dense_repr"].squeeze(0)
+            token_dense_mask = torch.any(token_dense_repr != 0, dim=1)
+            token_dense_repr = token_dense_repr[token_dense_mask]
             cls_repr = queries_repr["cls_repr"]
             perf_encode.stopCounters()
             perf_retrival.startCounters()
@@ -125,12 +129,12 @@ class LSHRetrieve:
                    "retrieval_L1_accesses", "retrieval_LLC_accesses",
                    "retrieval_branch_misses", "retrieval_task_clock"]
         perf_df = pd.DataFrame(all_perf, columns=columns)
-        perf_df.to_csv(r"{}/prune_weight-{}.citadel_perf.csv".format(self.perf_path,
-                                                                     str(self.config.prune_weight)),
+        perf_df.to_csv(r"{}/num_hash-{}.perf.csv".format(self.perf_path,
+                                                                     str(self.config.num_hash)),
                        index=False)
 
     def _save_ranks(self, scores, indices):
-        path = r"{}/prune_weight-{}.run.gz".format(self.rank_path, str(self.config.prune_weight))
+        path = r"{}/num_hash-{}.run.gz".format(self.rank_path, str(self.config.prune_weight))
         rh = faiss.ResultHeap(scores.shape[0], self.topk)
         if self.device == "cpu":
             rh.add_result(-scores.numpy(), indices.numpy())
@@ -156,12 +160,13 @@ class LSHRetrieve:
         qrels["query_id"] = qrels["query_id"].astype(str)
         qrels["doc_id"] = qrels["doc_id"].astype(str)
 
-        encode_dataset = BenchmarkDataset(self.config, None)
+        encode_dataset = LSHDataset(self.config, None)
         new_2_old = list(encode_dataset.corpus.keys())
         rank_results_pd = pd.DataFrame(list(ir_measures.read_trec_run(path)))
         for i, r in rank_results_pd.iterrows():
             rank_results_pd.at[i, "doc_id"] = new_2_old[int(r["doc_id"])]
         eval_results = ir_measures.calc_aggregate(self.config.measure, qrels, rank_results_pd)
+        eval_results["num_hash"] = self.config.num_hash
         return eval_results
 
     def run(self):
@@ -169,8 +174,7 @@ class LSHRetrieve:
         eval_results_path = self._retrieve()
         eval_results= self.evaluate(eval_results_path)
         print(eval_results)
-
-
+        return eval_results
 
 
 
@@ -185,8 +189,9 @@ class HypersphericalLSHIndex:
         self.sum_scores = None
         self.max_scores = None
 
+
     def load_index(self):
-        index_dir = os.path.join(self.config.index_dir, f'{self.config.dataset}')
+        index_dir = os.path.join(self.config.index_dir, f'{self.config.dataset}', str(self.config.num_hash))
         self.hash_bins = torch.load("{}/{}".format(index_dir, 'hash_bins.pt'), map_location="cpu")
         self.hash_matrix = torch.load(r"{}/{}".format(index_dir, 'hash_matrix.pt'), map_location="cpu")
         self.all_cls = torch.load(r"{}/{}".format(index_dir, 'all_cls.pt'), map_location="cpu")
@@ -229,8 +234,6 @@ class HypersphericalLSHIndex:
         hash_value_matrix = normalized_embeddings @ self.hash_matrix
         topk_indices = hash_value_matrix.topk(self.hash_matrix.shape[1], dim=1).indices
         return topk_indices
-
-
 
     def normalization(self, tensor):
         this_tensor = deepcopy(tensor)

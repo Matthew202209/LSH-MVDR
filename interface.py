@@ -1,8 +1,10 @@
 import argparse
+
+import pandas as pd
 from ir_measures import *
 
 from lsh_index import LSHIndex
-
+from lsh_retrieve import LSHRetrieve
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -10,8 +12,9 @@ if __name__ == '__main__':
     parser.add_argument("--dataset", type=str, default=r"nfcorpus")
     # parser.add_argument("--data_dir", type=str, default=r"./data/corpus")
     # parser.add_argument("--ctx_embeddings_dir", type=str, default=r"./cache/LSH")
-    parser.add_argument("--index_dir", type=str, default=r"./index/LSH")
-    parser.add_argument("--hashing", type=str, default="hyperspherical")
+    parser.add_argument("--queries_dir", type=str, default=r"./data/query")
+    parser.add_argument("--index_dir", type=str, default=r"./index/Hamming")
+    parser.add_argument("--hashing", type=str, default="hamming")
     parser.add_argument("--transformer_model_dir", type=str, default=r"./checkpoints/bert-base-uncased")
 
 
@@ -28,7 +31,7 @@ if __name__ == '__main__':
     parser.add_argument("--encode_device", type=str, default=r"cuda:0")
 
     parser.add_argument("--add_context_id", type=bool, default=False)
-    parser.add_argument("--num_hash", type=int, default=7)
+    parser.add_argument("--num_hash", type=int, default=3)
     parser.add_argument("--weight_threshold", type=float, default=0.5)
     parser.add_argument("--prune_weight", type=float, default=0.8)
 
@@ -47,10 +50,15 @@ if __name__ == '__main__':
     parser.add_argument("--measure", type=list, default=[nDCG @ 10, RR @ 10, Success @ 10])
     args = parser.parse_args()
 
-    #
-    lsh_indexer = LSHIndex(args)
-    lsh_indexer.run()
-
-    # h = LSHRetrieve(args)
-    # h.setup()
-    # h.run()
+    for num_hash in [6]:
+        args.num_hash = num_hash
+        lsh_indexer = LSHIndex(args)
+        lsh_indexer.run()
+    # eval_list = []
+    # for num_hash in [3]:
+    #     h = LSHRetrieve(args)
+    #     h.setup()
+    #     eval_results = h.run()
+    #     eval_list.append(eval_results)
+    #     eval_df = pd.DataFrame(eval_list)
+    # eval_df.to_csv(r"{}/hypersphericalLSH/{}/eval_results/eval.csv".format(args.results_save_to, args.dataset), index=False)
