@@ -108,7 +108,7 @@ class LSHIndex:
         all_dense_repr = torch.cat(token_dense_repr_list, dim=0)
         # all_sparse_repr = torch.cat(token_sparse_repr_list)
         all_cls = torch.cat(cls_list)
-
+        print(self.config.hashing)
         if self.config.hashing == "hyperspherical":
             hash_bins, hash_matrix , hash_v_mean, hash_v_std= self.hyperspherical_hashing(all_dense_repr, num_token_list)
 
@@ -131,12 +131,13 @@ class LSHIndex:
     def hamming_hashing(self, all_dense_repr, num_token_list):
         normalized_dense_repr, hash_v_mean, hash_v_std = normalization(all_dense_repr)
 
+
         hash_matrix = torch.rand(all_dense_repr.shape[1], self.config.num_hash)
         hash_value_matrix = normalized_dense_repr @ hash_matrix
         hamming_matrix = torch.where(hash_value_matrix > 0, torch.tensor(1), torch.tensor(0))
         hash_bins = {}
         for i , row in enumerate(tqdm(hamming_matrix)):
-            hash_value = tuple(row.tolist())
+            hash_value = "".join(row.numpy().astype(str))
             if hash_value in list(hash_bins.keys()):
                 hash_bins[hash_value]["dense_repr"].append((normalized_dense_repr[i], num_token_list[i]))
             else:

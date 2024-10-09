@@ -17,6 +17,7 @@ from LSH.lsh_model import LSHEncoder
 from LSH.transformer import HFTransform
 from dataloader import LSHQueryDataset, LSHDataset
 from utils import create_this_perf
+from abc import ABC, abstractmethod
 
 
 class LSHRetrieve:
@@ -52,7 +53,13 @@ class LSHRetrieve:
         self.context_encoder.to(self.config.device)
 
     def _sep_up_searcher(self):
-        self.searcher = HypersphericalLSHIndex(self.config)
+        print(self.config.hashing)
+        if self.config.hashing == "hyperspherical":
+            self.searcher = HypersphericalLSHIndex(self.config)
+
+        elif self.config.hashing == "hamming":
+            self.searcher = HammingLSHIndex(self.config)
+
         self.searcher.load_index()
         self.searcher.set_scores()
 
@@ -176,6 +183,131 @@ class LSHRetrieve:
         print(eval_results)
         return eval_results
 
+
+
+class BasedIndex:
+    def __init__(self, config):
+        self.config = config
+        self.hash_bins = None
+        self.hash_matrix = None
+        self.all_cls = None
+        self.hash_v_mean = None
+        self.hash_v_std = None
+        self.sum_scores = None
+        self.max_scores = None
+
+    def load_index(self):
+        index_dir = os.path.join(self.config.index_dir, f'{self.config.dataset}', str(self.config.num_hash))
+        self.hash_bins = torch.load("{}/{}".format(index_dir, 'hash_bins.pt'), map_location="cpu")
+        self.hash_matrix = torch.load(r"{}/{}".format(index_dir, 'hash_matrix.pt'), map_location="cpu")
+        self.all_cls = torch.load(r"{}/{}".format(index_dir, 'all_cls.pt'), map_location="cpu")
+        self.hash_v_mean = torch.load(r"{}/{}".format(index_dir, 'hash_v_mean.pt'), map_location="cpu")
+        self.hash_v_std = torch.load(r"{}/{}".format(index_dir, 'hash_v_std.pt'), map_location="cpu")
+
+    def set_scores(self):
+        self.sum_scores = torch.zeros((1, self.all_cls.shape[0],), dtype=torch.float32)
+        self.max_scores = torch.zeros((self.all_cls.shape[0],), dtype=torch.float32)
+
+    @abstractmethod
+    def search(self, cls_vec, embeddings, topk=30):
+        pass
+
+    @abstractmethod
+    def cls_search(self, cls_vec):
+        pass
+
+    @abstractmethod
+    def cal_hash_value(self, embeddings):
+        pass
+
+    def normalization(self, tensor):
+        this_tensor = deepcopy(tensor)
+        new_tensor = (this_tensor -  self.hash_v_mean) / self.hash_v_std
+        norms = torch.norm(new_tensor, p=2, dim=1, keepdim=True)
+        return new_tensor / norms
+
+    def compute_similarity(self, q_repr, ctx_repr):
+        return torch.matmul(q_repr, ctx_repr.T)
+
+
+    def sort(self, topk):
+        top_scores, top_ids = self.sum_scores.topk(topk, dim=1)
+        return top_scores, top_ids
+
+
+class HammingLSHIndex(BasedIndex):
+    def __init__(self, config):
+        super().__init__(config)
+        self.hamming_threshold = config.hamming_threshold
+        self.load_index()
+        self.set_scores()
+
+    def search(self, cls_vec, embeddings, topk=30):
+        cls_vec = cls_vec.to(torch.float32)
+        embeddings = embeddings.to(torch.float32)
+        hamming_matrix, normalized_embeddings = self.cal_hash_value(embeddings)
+        self.cls_search(cls_vec)
+        self.lsh_search(normalized_embeddings, hamming_matrix)
+        top_scores, top_ids = self.sort(topk)
+        self.sum_scores.fill_(0)
+        return top_scores, top_ids
+
+    def cal_hash_value(self, embeddings):
+        normalized_embeddings = self.normalization(embeddings)
+        hash_value_matrix = normalized_embeddings @ self.hash_matrix
+        hamming_matrix = torch.where(hash_value_matrix > 0, torch.tensor(1), torch.tensor(0))
+        return hamming_matrix, normalized_embeddings
+
+    def lsh_search(self, embeddings, hamming_matrix):
+        for i, hamming_key in enumerate(hamming_matrix):
+            hash_value = "".join(hamming_key.numpy().astype(str))
+            similar_hash_bin = self.find_similar_keys(hash_value)
+            if len(similar_hash_bin.keys()) == 0:
+                continue
+            for value in similar_hash_bin.values():
+                token_matrix = value["dense_repr"][0]
+                token_pid = value["dense_repr"][1]
+                token_score = HammingLSHIndex.cosine_similarity(embeddings[i], token_matrix)
+                token_pid_tensor = torch.Tensor(token_pid).to(torch.int64)
+                torch_scatter.scatter_max(src=token_score, index=token_pid_tensor, out=self.max_scores, dim=-1)
+                self.sum_scores += self.max_scores
+                self.max_scores.fill_(0)
+
+
+    def cls_search(self, cls_vec):
+        self.sum_scores =  HammingLSHIndex.cosine_similarity(cls_vec, self.all_cls)
+
+    def find_similar_keys(self, query):
+        similar_keys_values = {}
+        for key, value in self.hash_bins.items():
+            if HammingLSHIndex.hamming_distance(query, key) <=self.hamming_threshold:
+                similar_keys_values[key] = value
+        return similar_keys_values
+
+    @staticmethod
+    def hamming_distance(s1,s2):
+        if len(s1) != len(s2):
+            raise ValueError("Length of s1 must be equal to length of s2.")
+        return sum(c1!=c2 for c1,c2 in zip(s1,s2))
+
+
+    @staticmethod
+    def cosine_similarity(vec, matrix):
+        # 将向量扩展为矩阵，以便进行矩阵运算
+        vec_matrix = vec  # 增加一个维度，使其成为列向量
+
+        # 计算点积
+        dot_product = torch.matmul(vec_matrix, matrix.transpose(0, 1))
+
+        # 计算向量的模
+        norm_vec = torch.norm(vec, p=2)
+        norm_matrix = torch.norm(matrix, p=2, dim=1)
+
+        # 计算余弦相似度
+        cosine_similarity = dot_product / (norm_vec * norm_matrix)
+        # cosine_similarity = similarity.squeeze()
+        return  torch.where(cosine_similarity < 0,
+                            torch.tensor([0.0], device=cosine_similarity.device), cosine_similarity)
 
 
 class HypersphericalLSHIndex:

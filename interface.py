@@ -41,24 +41,27 @@ if __name__ == '__main__':
     parser.add_argument("--num_centroids", type=float, default=16)
     parser.add_argument("--iter", type=float, default=5)
     parser.add_argument("--threshold", type=int, default=1000)
+    parser.add_argument("--hamming_threshold", type=int, default=2)
 
     parser.add_argument("--query_json_dir", type=str, default=r'./data/query')
     parser.add_argument("--label_json_dir", type=str, default=r'./data/label')
-    parser.add_argument("--results_save_to", type=str, default=r'./results')
+    parser.add_argument("--results_save_to", type=str, default=r'./results_hamming')
     parser.add_argument("--portion", type=int, default=1)
     parser.add_argument("--topk", type=int, default=10)
     parser.add_argument("--measure", type=list, default=[nDCG @ 10, RR @ 10, Success @ 10])
     args = parser.parse_args()
 
-    for num_hash in [6]:
+    # for num_hash in [4]:
+    #     args.num_hash = num_hash
+    #     lsh_indexer = LSHIndex(args)
+    #     lsh_indexer.run()
+
+    eval_list = []
+    for num_hash in [4]:
         args.num_hash = num_hash
-        lsh_indexer = LSHIndex(args)
-        lsh_indexer.run()
-    # eval_list = []
-    # for num_hash in [3]:
-    #     h = LSHRetrieve(args)
-    #     h.setup()
-    #     eval_results = h.run()
-    #     eval_list.append(eval_results)
-    #     eval_df = pd.DataFrame(eval_list)
-    # eval_df.to_csv(r"{}/hypersphericalLSH/{}/eval_results/eval.csv".format(args.results_save_to, args.dataset), index=False)
+        h = LSHRetrieve(args)
+        h.setup()
+        eval_results = h.run()
+        eval_list.append(eval_results)
+        eval_df = pd.DataFrame(eval_list)
+    eval_df.to_csv(r"{}/hypersphericalLSH/{}/eval_results/eval.csv".format(args.results_save_to, args.dataset), index=False)
